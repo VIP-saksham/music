@@ -1,143 +1,80 @@
 import os
-import re
-
 import aiofiles
 import aiohttp
-import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
-from unidecode import unidecode
-from ytSearch import VideosSearch
+from PIL import Image
 
-from AnonXMusic import app
 from config import YOUTUBE_IMG_URL
 
 
-def changeImageSize(maxWidth, maxHeight, image):
-    widthRatio = maxWidth / image.size[0]
-    heightRatio = maxHeight / image.size[1]
-    newWidth = int(widthRatio * image.size[0])
-    newHeight = int(heightRatio * image.size[1])
-    newImage = image.resize((newWidth, newHeight))
-    return newImage
-
-def circle(img): 
-     h,w=img.size 
-     a = Image.new('L', [h,w], 0) 
-     b = ImageDraw.Draw(a) 
-     b.pieslice([(0, 0), (h,w)], 0, 360, fill = 255,outline = "white") 
-     c = np.array(img) 
-     d = np.array(a) 
-     e = np.dstack((c, d)) 
-     return Image.fromarray(e)
+CACHE_DIR = "cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-def clear(text):
-    list = text.split(" ")
-    title = ""
-    for i in list:
-        if len(title) + len(i) < 60:
-            title += " " + i
-    return title.strip()
+def resize_cover(img, size=(1920, 1080)):
+    """
+    Resize image to exact fullscreen size without distortion
+    (center crop, professional look)
+    """
+    img_ratio = img.width / img.height
+    target_ratio = size[0] / size[1]
+
+    if img_ratio > target_ratio:
+        new_height = size[1]
+        new_width = int(new_height * img_ratio)
+    else:
+        new_width = size[0]
+        new_height = int(new_width / img_ratio)
+
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - size[0]) // 2
+    top = (new_height - size[1]) // 2
+    right = left + size[0]
+    bottom = top + size[1]
+
+    return img.crop((left, top, right, bottom))
 
 
-async def get_thumb(videoid,user_id):
-    if os.path.isfile(f"cache/{videoid}_{user_id}.png"):
-        return f"cache/{videoid}_{user_id}.png"
+async def get_thumb(videoid, user_id):
+    final_path = f"{CACHE_DIR}/{videoid}_{user_id}.png"
 
-    url = f"https://www.youtube.com/watch?v={videoid}"
+    if os.path.isfile(final_path):
+        return final_path
+
     try:
-        results = VideosSearch(url, limit=1)
-        for result in (await results.next())["result"]:
-            try:
-                title = result["title"]
-                title = re.sub("\W+", " ", title)
-                title = title.title()
-            except:
-                title = "Unsupported Title"
-            try:
-                duration = result["duration"]
-            except:
-                duration = "Unknown Mins"
-            thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-            try:
-                views = result["viewCount"]["short"]
-            except:
-                views = "Unknown Views"
-            try:
-                channel = result["channel"]["name"]
-            except:
-                channel = "Unknown Channel"
+        # 🔥 Direct highest quality YouTube thumbnails
+        thumb_urls = [
+            f"https://i.ytimg.com/vi/{videoid}/maxresdefault.jpg",
+            f"https://i.ytimg.com/vi/{videoid}/hqdefault.jpg",
+        ]
+
+        image_bytes = None
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(thumbnail) as resp:
-                if resp.status == 200:
-                    f = await aiofiles.open(f"cache/thumb{videoid}.png", mode="wb")
-                    await f.write(await resp.read())
-                    await f.close()
-        try:
-            async for photo in app.get_chat_photos(user_id,1):
-                sp=await app.download_media(photo.file_id, file_name=f'{user_id}.jpg')
-        except:
-            async for photo in app.get_chat_photos(app.id,1):
-                sp=await app.download_media(photo.file_id, file_name=f'{app.id}.jpg')
+            for url in thumb_urls:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        image_bytes = await resp.read()
+                        break
 
-        xp=Image.open(sp)
+        if not image_bytes:
+            return YOUTUBE_IMG_URL
 
-        youtube = Image.open(f"cache/thumb{videoid}.png")
-        image1 = changeImageSize(1280, 720, youtube)
-        image2 = image1.convert("RGBA")
-        background = image2.filter(filter=ImageFilter.BoxBlur(10))
-        enhancer = ImageEnhance.Brightness(background)
-        background = enhancer.enhance(0.5)
-        y=changeImageSize(200,200,circle(youtube)) 
-        background.paste(y,(45,225),mask=y)
-        a=changeImageSize(200,200,circle(xp)) 
-        background.paste(a,(1045,225),mask=a)
-        draw = ImageDraw.Draw(background)
-        arial = ImageFont.truetype("AnonXMusic/assets/font2.ttf", 30)
-        font = ImageFont.truetype("AnonXMusic/assets/font.ttf", 30)
-        draw.text((1110, 8), unidecode(app.name), fill="white", font=arial)
-        draw.text(
-                (55, 560),
-                f"{channel} | {views[:23]}",
-                (255, 255, 255),
-                font=arial,
-            )
-        draw.text(
-                (57, 600),
-                clear(title),
-                (255, 255, 255),
-                font=font,
-            )
-        draw.line(
-                [(55, 660), (1220, 660)],
-                fill="white",
-                width=5,
-                joint="curve",
-            )
-        draw.ellipse(
-                [(918, 648), (942, 672)],
-                outline="white",
-                fill="white",
-                width=15,
-            )
-        draw.text(
-                (36, 685),
-                "00:00",
-                (255, 255, 255),
-                font=arial,
-            )
-        draw.text(
-                (1185, 685),
-                f"{duration[:23]}",
-                (255, 255, 255),
-                font=arial,
-            )
-        try:
-            os.remove(f"cache/thumb{videoid}.png")
-        except:
-            pass
-        background.save(f"cache/{videoid}_{user_id}.png")
-        return f"cache/{videoid}_{user_id}.png"
-    except Exception:
+        temp_path = f"{CACHE_DIR}/temp_{videoid}.jpg"
+        async with aiofiles.open(temp_path, "wb") as f:
+            await f.write(image_bytes)
+
+        img = Image.open(temp_path).convert("RGB")
+
+        # 🎯 FULL SCREEN 1920×1080
+        img = resize_cover(img, (1920, 1080))
+
+        # 🔥 Save max quality (no compression tricks)
+        img.save(final_path, "PNG", optimize=False)
+
+        os.remove(temp_path)
+        return final_path
+
+    except Exception as e:
+        print("THUMB ERROR:", e)
         return YOUTUBE_IMG_URL
